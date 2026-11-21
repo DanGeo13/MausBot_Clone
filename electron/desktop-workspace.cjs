@@ -63,7 +63,7 @@ function normalizeDesktopWorkspaceBounds(rawBounds, contentSize) {
   return { x, y, width, height };
 }
 
-function createDesktopWorkspaceManager({ owner, createView, notify, partitionPrefix }) {
+function createDesktopWorkspaceManager({ owner, createView, notify, partitionPrefix, releaseViewFocus = () => {} }) {
   if (!owner || owner.isDestroyed?.()) throw new Error("The OpenMausBot window is unavailable");
   if (createView?.constructor !== Function) throw new Error("The desktop workspace viewer is unavailable");
   const emit = notify?.constructor === Function ? notify : () => {};
@@ -94,6 +94,7 @@ function createDesktopWorkspaceManager({ owner, createView, notify, partitionPre
       return entry.terminalState ?? stateFor(entry, status, code);
     }
     entries.delete(entry.contextId);
+    releaseViewFocus(entry.view.webContents, owner);
     try {
       entry.view.setVisible(false);
     } catch {}
@@ -213,6 +214,7 @@ function createDesktopWorkspaceManager({ owner, createView, notify, partitionPre
         if (!entry) throw new Error("That desktop workspace slot is not open");
         const bounds = normalizeDesktopWorkspaceBounds(item.bounds, owner.getContentSize());
         entry.view.setBounds(bounds);
+        if (item.visible !== true && entry.view.getVisible?.()) releaseViewFocus(entry.view.webContents, owner);
         entry.view.setVisible(item.visible === true);
       }
       return true;

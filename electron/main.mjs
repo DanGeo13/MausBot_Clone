@@ -1,4 +1,5 @@
 import { launchRecord } from "./launch-record-main.mjs"; import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, Tray, WebContentsView, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, net, powerMonitor, powerSaveBlocker, safeStorage, screen, session, shell, systemPreferences, utilityProcess, nativeTheme } from "electron"; import { createBrowserPanes, fromAppWindow } from "./browser-pane-main.mjs";
+import { installMacPasswordFocusGuard, releaseMacViewPasswordFocus } from "./macos-password-focus.mjs";
 import { createRequire } from "node:module";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -1364,6 +1365,7 @@ function ensureDesktopWorkspace(owner) {
     owner,
     createView: (options) => new WebContentsView(options),
     partitionPrefix: `openmausbot-desktop-workspace-${randomUUID()}`,
+    releaseViewFocus: releaseMacViewPasswordFocus,
     notify: (state) => {
       if (!owner.isDestroyed() && !owner.webContents.isDestroyed()) {
         owner.webContents.send("desktop-workspace:state", state);
@@ -2783,6 +2785,8 @@ setCuaStateListener((connection) => {
     console.error("[desktop] capability broadcast failed:", error);
   });
 });
+
+installMacPasswordFocusGuard(app, appWindows);
 
 app.whenReady().then(async () => { launchRecord.mark("ready");
   await evictStartupCacheOnce({
