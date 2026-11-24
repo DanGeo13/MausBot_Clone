@@ -1,4 +1,5 @@
 import { launchRecord } from "./launch-record-main.mjs"; import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, Tray, WebContentsView, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, net, powerMonitor, powerSaveBlocker, safeStorage, screen, session, shell, systemPreferences, utilityProcess, nativeTheme } from "electron"; import { createBrowserPanes, fromAppWindow } from "./browser-pane-main.mjs";
+import { installMacPasswordFocusGuard, releaseMacViewPasswordFocus } from "./macos-password-focus.mjs";
 import { createRequire } from "node:module";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -125,7 +126,7 @@ const { createDisplayMediaGuard, invokeDisplayMediaCallback, selectCaptureSource
 );
 const { STAGE_PREFIX: APPIMAGE_CUA_STAGE_PREFIX } = require("./cua-linux-bundle.cjs");
 const { desktopViewerUrl, sameDesktopViewerOrigin } = require("./desktop-viewer.cjs");
-const { createDesktopWorkspaceManager } = require("./desktop-workspace.cjs");
+const { createDesktopWorkspaceManager, desktopWorkspaceNotifier } = require("./desktop-workspace.cjs");
 const { createTrustedApprovalModeCoordinator } = require("./approval-trusted-mode.cjs");
 const { DESKTOP_MUTATION_HEADER, desktopServerHeaders } = require("./desktop-server-auth.cjs");
 const { MIN_BOUNDS, normalizeUnreadCount, resolveWindowState } = require("./window-state.cjs");
@@ -1364,11 +1365,8 @@ function ensureDesktopWorkspace(owner) {
     owner,
     createView: (options) => new WebContentsView(options),
     partitionPrefix: `openmausbot-desktop-workspace-${randomUUID()}`,
-    notify: (state) => {
-      if (!owner.isDestroyed() && !owner.webContents.isDestroyed()) {
-        owner.webContents.send("desktop-workspace:state", state);
-      }
-    },
+    releaseViewFocus: releaseMacViewPasswordFocus,
+    notify: desktopWorkspaceNotifier(owner),
   });
   desktopWorkspaceManager = manager;
 
@@ -2783,6 +2781,8 @@ setCuaStateListener((connection) => {
     console.error("[desktop] capability broadcast failed:", error);
   });
 });
+
+installMacPasswordFocusGuard(app, appWindows);
 
 app.whenReady().then(async () => { launchRecord.mark("ready");
   await evictStartupCacheOnce({

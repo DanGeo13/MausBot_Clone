@@ -17,6 +17,7 @@
 // few seconds to offer it, and the rail comes back beside one that doesn't, or that stops responding.
 
 import { TRAFFIC_LIGHTS } from "./window-chrome.mjs";
+import { releaseMacViewPasswordFocus } from "./macos-password-focus.mjs";
 
 export const CHROME_RAIL_WIDTH = 36;
 export const CHROME_RAIL_PATH = "/rail";
@@ -153,7 +154,10 @@ export function createChromeRail({ createView, preload, args, url, wanted, prefs
           layout();
         } else {
           expanded = false;
-          if (view) win.contentView.removeChildView(view);
+          if (view) {
+            releaseMacViewPasswordFocus(view.webContents, win);
+            win.contentView.removeChildView(view);
+          }
         }
         tellPage();
         changed();

@@ -12,6 +12,7 @@ import { RESTORE_PROMPT, takeDialogs } from "./browser-pane-dialogs.mjs";
 import { createEchoes } from "./browser-pane-input.mjs";
 import { createDialogGate } from "./browser-pane-under-dialog.mjs";
 import { captureUndrawn, windowDraws } from "./browser-pane-capture.mjs";
+import { releaseMacViewPasswordFocus } from "./macos-password-focus.mjs";
 
 const { normalizeDesktopWorkspaceBounds } = desktopWorkspace;
 const PERSON_INPUT = new Set(["mouseDown", "keyDown", "rawKeyDown", "char", "mouseWheel", "gestureScrollBegin", "touchStart"]);
@@ -91,7 +92,12 @@ export function createBrowserPanes({ createView, createPopup = null, createParki
   /** Moves a pane's view into `target`; a view sits in one window at a time. */
   function place(entry, target) {
     if (entry.popup || !target || entry.window === target) return;
-    try { if (entry.window && !entry.window.isDestroyed()) entry.window.contentView.removeChildView(entry.view); } catch {}
+    try {
+      if (entry.window && !entry.window.isDestroyed()) {
+        releaseMacViewPasswordFocus(entry.contents, entry.window);
+        entry.window.contentView.removeChildView(entry.view);
+      }
+    } catch {}
     target.contentView.addChildView(entry.view);
     entry.window = target;
   }
@@ -171,6 +177,7 @@ export function createBrowserPanes({ createView, createPopup = null, createParki
             if (entry.window !== shownIn) place(entry, shownIn);
             else if (!entry.visible) shownIn.contentView.addChildView(entry.view);
           }
+          if (!visible && entry.visible) releaseMacViewPasswordFocus(entry.contents, entry.window);
           entry.view.setVisible(visible);
         } catch (error) {
           log(`browser pane: could not place ${tab}: ${error?.message ?? error}`);
@@ -396,6 +403,7 @@ export function createBrowserPanes({ createView, createPopup = null, createParki
     if (entry.popup) {
       try { if (!entry.popup.isDestroyed()) entry.popup.close(); } catch {}
     } else {
+      releaseMacViewPasswordFocus(entry.contents, entry.window);
       try { entry.view.setVisible(false); } catch {}
       try { if (!entry.window.isDestroyed()) entry.window.contentView.removeChildView(entry.view); } catch {}
     }
@@ -715,6 +723,7 @@ export function createBrowserPanes({ createView, createPopup = null, createParki
           entry.visible = false;
           if (!target || entry.contents.isDestroyed()) continue;
           try {
+            releaseMacViewPasswordFocus(entry.contents, win);
             entry.view.setVisible(false);
             target.contentView.addChildView(entry.view);
             entry.window = target;

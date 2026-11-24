@@ -263,6 +263,36 @@ test("shows the bot's tab in front over the panel's rectangle and hides it under
   await assert.rejects(panes.show({ botId: "../a", visible: true }), /invalid/);
 });
 
+test("releases macOS pane focus before hiding or closing the focused view", { skip: process.platform !== "darwin" }, async () => {
+  const { send, panes, posted, electron } = await openedWith();
+  const [view] = electron.views;
+  const win = electron.window;
+  const order = [];
+  view.webContents.mainFrame = {
+    isDestroyed: () => false,
+    async executeJavaScript() { order.push("blur"); },
+  };
+  view.webContents.isFocused = () => true;
+  win.isFocused = () => true;
+  win.webContents.isDestroyed = () => false;
+  win.webContents.focus = () => order.push("host focus");
+  view.setVisible = (visible) => { view.visible = visible; if (!visible) order.push("hide"); };
+  view.webContents.close = () => order.push("close");
+
+  const input = { botId: "a", bounds: { x: 0, y: 0, width: 800, height: 600 }, visible: true };
+  const showing = panes.show(input);
+  send({ op: "resolved", req: posted.find((message) => message.op === "which").req, browser: "bot:a" });
+  assert.deepEqual(await showing, { shown: true });
+  order.length = 0;
+  await panes.show({ ...input, visible: false });
+  assert.deepEqual(order, ["blur", "host focus", "hide"]);
+
+  await panes.show(input);
+  order.length = 0;
+  send({ op: "close-tab", browser: "bot:a", tab: "p1" });
+  assert.deepEqual(order, ["blur", "host focus", "hide", "close"]);
+});
+
 test("makes a page's popup another tab of the same profile, with its opener", async () => {
   const { send, last, electron } = setup();
   send({ op: "open", browser: "bot:a", partition: PARTITION, egress: 41000, downloads: DOWNLOADS, identity: "native" });
