@@ -63,6 +63,15 @@ function normalizeDesktopWorkspaceBounds(rawBounds, contentSize) {
   return { x, y, width, height };
 }
 
+/** Sends viewer state to the owning window's page, unless either is already gone. */
+function desktopWorkspaceNotifier(owner) {
+  return (state) => {
+    if (!owner.isDestroyed() && !owner.webContents.isDestroyed()) {
+      owner.webContents.send("desktop-workspace:state", state);
+    }
+  };
+}
+
 function createDesktopWorkspaceManager({ owner, createView, notify, partitionPrefix, releaseViewFocus = () => {} }) {
   if (!owner || owner.isDestroyed?.()) throw new Error("The OpenMausBot window is unavailable");
   if (createView?.constructor !== Function) throw new Error("The desktop workspace viewer is unavailable");
@@ -271,6 +280,7 @@ function createDesktopWorkspaceManager({ owner, createView, notify, partitionPre
 module.exports = {
   MAX_WORKSPACE_VIEWS,
   createDesktopWorkspaceManager,
+  desktopWorkspaceNotifier,
   desktopWorkspaceContextId,
   desktopWorkspaceUrl,
   normalizeDesktopWorkspaceBounds,

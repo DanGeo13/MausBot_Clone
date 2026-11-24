@@ -126,7 +126,7 @@ const { createDisplayMediaGuard, invokeDisplayMediaCallback, selectCaptureSource
 );
 const { STAGE_PREFIX: APPIMAGE_CUA_STAGE_PREFIX } = require("./cua-linux-bundle.cjs");
 const { desktopViewerUrl, sameDesktopViewerOrigin } = require("./desktop-viewer.cjs");
-const { createDesktopWorkspaceManager } = require("./desktop-workspace.cjs");
+const { createDesktopWorkspaceManager, desktopWorkspaceNotifier } = require("./desktop-workspace.cjs");
 const { createTrustedApprovalModeCoordinator } = require("./approval-trusted-mode.cjs");
 const { DESKTOP_MUTATION_HEADER, desktopServerHeaders } = require("./desktop-server-auth.cjs");
 const { MIN_BOUNDS, normalizeUnreadCount, resolveWindowState } = require("./window-state.cjs");
@@ -1366,11 +1366,7 @@ function ensureDesktopWorkspace(owner) {
     createView: (options) => new WebContentsView(options),
     partitionPrefix: `openmausbot-desktop-workspace-${randomUUID()}`,
     releaseViewFocus: releaseMacViewPasswordFocus,
-    notify: (state) => {
-      if (!owner.isDestroyed() && !owner.webContents.isDestroyed()) {
-        owner.webContents.send("desktop-workspace:state", state);
-      }
-    },
+    notify: desktopWorkspaceNotifier(owner),
   });
   desktopWorkspaceManager = manager;
 
