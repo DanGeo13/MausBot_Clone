@@ -572,7 +572,7 @@ import { PhoneSecretBridge, PhoneSecretSubmissionRegistry } from "./phone-secret
 // Keep these two last, so loading the route table leaves module start-up order as is.
 import { gzipTunnelReplies, json, onJsonBody, parsedBodyOf, readBody } from "./harness/http.ts";
 import { holdBodyDeadline } from "./body-deadline.ts";
-import { createNoAiNotice } from "./host/no-ai-notice.ts"; import { PASS, ROUTES, dispatchRoutes } from "./routes/table.ts"; import { createBotLinkHost } from "./host/bot-link-host.ts"; import { followRoomMentions } from "./host/bot-link-rooms.ts"; import { standInAmong, standInWriteRefusal } from "./host/stand-in-guard.ts"; import { isBotLinkHeldPath, linkSessionRefusal } from "./routes/bot-link.ts"; import { createSecretCards } from "./host/secret-cards.ts"; import { createInternalCredentialRequestRoutes, createSecretCardRoutes } from "./routes/secret-cards.ts"; import { applyIncludedPagesMessage, pagesAccess, pagesNotOffered } from "./pages/access.ts"; import { createPublishedPages } from "./pages/service.ts"; import { createInternalToolRoutes } from "./routes/internal-tools.ts"; import { createHelperSuggestionRoutes } from "./routes/helper-suggestion.ts"; import { createXConnectorRoutes } from "./routes/x-connector.ts"; import { createMoveFreeze, switchAutomationsOff } from "./move-freeze.ts"; import { createMoveFreezeRoutes } from "./routes/move-freeze.ts"; import { createMoveWaits } from "./move-waits.ts"; import { assertBotHere, botMoveRefusal, createBotMoves } from "./bot-moves.ts"; import { createBotMoveRoutes } from "./routes/bot-moves.ts"; import { createTeamMoveIn, moveInRefusal } from "./team-move-in.ts";
+import { createNoAiNotice } from "./host/no-ai-notice.ts"; import { PASS, ROUTES, dispatchRoutes } from "./routes/table.ts"; import { createBotLinkHost } from "./host/bot-link-host.ts"; import { followRoomMentions } from "./host/bot-link-rooms.ts"; import { standInAmong, standInWriteRefusal } from "./host/stand-in-guard.ts"; import { isBotLinkHeldPath, linkSessionRefusal } from "./routes/bot-link.ts"; import { createSecretCards } from "./host/secret-cards.ts"; import { createSecretCardResumer, directContinuationError, roomContinuationError } from "./host/secret-card-resume.ts"; import { createInternalCredentialRequestRoutes, createSecretCardRoutes } from "./routes/secret-cards.ts"; import { applyIncludedPagesMessage, pagesAccess, pagesNotOffered } from "./pages/access.ts"; import { createPublishedPages } from "./pages/service.ts"; import { createInternalToolRoutes } from "./routes/internal-tools.ts"; import { createHelperSuggestionRoutes } from "./routes/helper-suggestion.ts"; import { createXConnectorRoutes } from "./routes/x-connector.ts"; import { createMoveFreeze, switchAutomationsOff } from "./move-freeze.ts"; import { createMoveFreezeRoutes } from "./routes/move-freeze.ts"; import { createMoveWaits } from "./move-waits.ts"; import { assertBotHere, botMoveRefusal, createBotMoves } from "./bot-moves.ts"; import { createBotMoveRoutes } from "./routes/bot-moves.ts"; import { createTeamMoveIn, moveInRefusal } from "./team-move-in.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts"; import { createWorkspaceBannerRoutes, workspaceBannerStore, workspaceBannerSummary } from "./routes/workspace-banner.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts"; import { createBotLibraryRoutes } from "./routes/bot-library.ts";
@@ -1911,41 +1911,41 @@ const parkedNodesToReconcile = new Set<string>();
 
 function reconcileParkedNode(node: HandoffView): boolean {
   if (node.status !== "waiting" || !node.cards?.length) return false;
-  const messages = store.messagesFor(node.threadId);
+  const messages = store.messagesFor(node.threadId), answer = (text: string, ids: readonly string[]) => coordinator.answerNode(node.id, text) ? (noteMovedOnSecretCards(node, ids), true) : false;
   for (const id of node.cards) {
     const message = messages.find((item) => item.id === id);
     if (!message) continue;
     const request = message.card?.teamSetupRequest;
     if (request?.result) {
-      if (!coordinator.answerNode(node.id, teamSetupDecisionText(request))) return false;
+      if (!answer(teamSetupDecisionText(request), [message.id])) return false;
       if (!request.resumed) store.patchMessage(node.threadId, message.id, { card: { ...message.card!, teamSetupRequest: { ...request, resumed: true } } });
       return true;
     }
-    if (message.card?.mcpRequest && mcpRequests.decided(node.threadId, message.id)) return mcpRequests.resume(node.threadId, message.id, (text) => coordinator.answerNode(node.id, text));
+    if (message.card?.mcpRequest && mcpRequests.decided(node.threadId, message.id)) return mcpRequests.resume(node.threadId, message.id, (text) => answer(text, [message.id]));
     if (isMcpSignInCard(message)) {
       const heard = mcpSignInCards.parkedAnswer(message.connector);
       if (!heard) continue;
-      if (!coordinator.answerNode(node.id, heard)) return false;
+      if (!answer(heard, [message.id])) return false;
       store.patchMessage(node.threadId, message.id, { connector: { ...message.connector, resumed: true } });
       return true;
     }
     if (message.connector) {
       const cards = connectorCards(node.threadId, message.connector.resumeKey);
       if (cards.some((item) => item.connector?.dismissed || item.connector?.status !== "connected")) continue;
-      if (!coordinator.answerNode(node.id, connectionUpdateText(cards.map((item) => item.connector!.label)))) return false;
+      if (!answer(connectionUpdateText(cards.map((item) => item.connector!.label)), cards.map((item) => item.id))) return false;
       for (const item of cards) store.patchMessage(node.threadId, item.id, { connector: { ...item.connector!, resumed: true, error: undefined } });
       return true;
     }
     const secret = message.secret;
     if (secret && !secret.superseded && (secret.provided || secret.dismissed)) {
-      if (!coordinator.answerNode(node.id, secretCards.updateText(message.id, secret, secret.provided ? "provided" : "dismissed"))) return false;
+      if (!answer(secretCards.updateText(message.id, secret, secret.provided ? "provided" : "dismissed"), [message.id])) return false;
       if (!secret.resumed) store.patchMessage(node.threadId, message.id, { secret: { ...secret, resumed: true, error: undefined } });
       return true;
     }
     const signIn = message.signIn;
     const signedIn = signIn && !signIn.superseded ? signInOutcome(signIn) : null;
     if (signIn && signedIn) {
-      if (!coordinator.answerNode(node.id, signInCardResumePrompt(signIn, signedIn))) return false;
+      if (!answer(signInCardResumePrompt(signIn, signedIn), [message.id])) return false;
       if (!signIn.resumed) store.patchMessage(node.threadId, message.id, { signIn: { ...signIn, resumed: true, error: undefined } });
       return true;
     }
@@ -1990,12 +1990,8 @@ function settleDirectCoordination(generation: string | undefined, settled: Direc
 
 const ENDED: ReadonlySet<HandoffView["status"]> = new Set(["completed", "failed", "cancelled"]);
 
-function answerCardNode(threadId: string, messageId: string, text: string): boolean {
-  const node = coordinator.active().find((n) => n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
-  if (!node) return false;
-  if (coordinator.answerNode(node.id, text)) return true;
-  return node.status === "queued";
-}
+function noteMovedOnSecretCards(node: HandoffView, answeredIds: readonly string[]): void { if (!node.cards?.length) return; const owner = directRequestOwners.get(node.threadId), reqId = node.groupId ? [...(groupTurnOperations.get(node.groupId) ?? [])].find((c) => c.threadId === node.threadId && !c.cancelled && c.requestMessageId)?.requestMessageId : owner && !owner.stopped && owner.generations.has(node.rootId) ? owner.messageId : undefined; secretCardResumer?.noteTurnMovedOn(node.threadId, node.cards, answeredIds, { nodeId: node.id, botId: node.botId, threadId: node.threadId, ...(node.groupId ? { groupId: node.groupId } : {}), ...(node.parentId ? { delegated: true } : {}), ...(reqId ? { requestMessageId: reqId } : {}) }); }
+function answerCardNode(threadId: string, messageId: string, text: string, allowQueued = true): boolean { const node = coordinator.active().find((n) => n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status)); if (node && coordinator.answerNode(node.id, text)) { noteMovedOnSecretCards(node, [messageId]); return true; } return Boolean(allowQueued && node?.status === "queued"); }
 
 function releaseCardNode(threadId: string, messageId: string, reason: string): void {
   const live = coordinator.active().filter((n) => n.threadId === threadId && !ENDED.has(n.status));
@@ -2007,7 +2003,7 @@ function releaseCardNode(threadId: string, messageId: string, reason: string): v
 
 /** Call before the Stop cancels the node, while the cards are still its own. */
 function stopParkedCards(threadId: string): void {
-  stopCards(threadId, new Set(coordinator.active().filter((node) => node.threadId === threadId && (node.status === "waiting" || node.status === "queued")).flatMap((node) => node.cards ?? [])));
+  stopCards(threadId, new Set([...coordinator.active().filter((node) => node.threadId === threadId && (node.status === "waiting" || node.status === "queued")).flatMap((node) => node.cards ?? []), ...(secretCardResumer?.trackedCardIds(threadId) ?? [])])); secretCardResumer?.forgetThread(threadId);
 }
 
 function stopCards(threadId: string, ids: ReadonlySet<string>): void {
@@ -2779,7 +2775,7 @@ const phones = createPhones({
   mint: (botId, turn) => mintInternalCapability({ botId, ...turn, kind: "device", depth: 0, skillAuthoring: false, createdBots: 0, openedThreads: 0 }),
   active: (turn) => internalCapabilityIsActive(turn as InternalCapability),
 });
-const cloudPlanTier = createCloudPlanTier({ dataDir: DATA_DIR, cloudHome: Boolean(CLOUD_HOME), changed: () => broadcast({ kind: "config", ...configStatus() }) }); const starterAwake = createStarterAwake({ dataDir: DATA_DIR, starter: () => cloudPlanTier.starter(), bots: () => store.bots, changed: () => broadcast({ kind: "config", ...configStatus() }) }); const starterCaps = createStarterCaps({ starter: () => cloudPlanTier.starter(), awake: starterAwake, waitsOnOthers: (threadId) => coordinator.outstandingFor(threadId).length > 0, laneOwned: (threadId) => burst.laneOwned(threadId), botName: (botId) => store.bot(botId)?.name, routineThread: (botId, threadId) => { const run = activeRoutineRunForThread(threadId); return run?.botId === botId && run.target === "bot"; }, pausedLine: (language, limit) => serverLine(language, "server.botPaused", { limit }), refused: () => broadcast({ kind: "config", ...configStatus() }) }); engineMemory.useCap(starterCaps.engine); let starterRoutineWake: StarterRoutineWake | undefined; /* made beside tieAutomationsToBots, once the routines and triggers are */ const botHolds = createBotHolds({ dataDir: DATA_DIR, bots: () => store.bots, line: (language, key, params) => serverLine(language, key, params), changed: () => broadcast({ kind: "config", ...configStatus() }) }); let cloudPower: CloudPower | null = null; // The sleep handshake of a plan that sleeps (server/cloud-power.ts), made just before the server listens.
+const cloudPlanTier = createCloudPlanTier({ dataDir: DATA_DIR, cloudHome: Boolean(CLOUD_HOME), changed: () => broadcast({ kind: "config", ...configStatus() }) }); const starterAwake = createStarterAwake({ dataDir: DATA_DIR, starter: () => cloudPlanTier.starter(), bots: () => store.bots, changed: () => broadcast({ kind: "config", ...configStatus() }) }); const starterCaps = createStarterCaps({ starter: () => cloudPlanTier.starter(), awake: starterAwake, waitsOnOthers: (threadId) => coordinator.outstandingFor(threadId).length > 0, laneOwned: (threadId) => burst.laneOwned(threadId), botName: (botId) => store.bot(botId)?.name, routineThread: (botId, threadId) => { const run = activeRoutineRunForThread(threadId); return run?.botId === botId && run.target === "bot"; }, pausedLine: (language, limit) => serverLine(language, "server.botPaused", { limit }), refused: () => broadcast({ kind: "config", ...configStatus() }) }); engineMemory.useCap(starterCaps.engine); let starterRoutineWake: StarterRoutineWake | undefined; /* made beside tieAutomationsToBots, once the routines and triggers are */ const botHolds = createBotHolds({ dataDir: DATA_DIR, bots: () => store.bots, line: (language, key, params) => serverLine(language, key, params), changed: () => { broadcast({ kind: "config", ...configStatus() }); drainQueuedSends(); } }); let cloudPower: CloudPower | null = null; // The sleep handshake of a plan that sleeps (server/cloud-power.ts), made just before the server listens.
 const teamWelcome = createTeamWelcomeStore(DATA_DIR); const { cloudHealth, cloudSigned } = createCloudSignedHost({ cloudHome: CLOUD_HOME, sessions, power: () => cloudPower, box: () => botBox.report(), teamAdmin: teamAdminHost(), policyChanged: nudgeCloudTeamPolicy, invited: (email, by) => teamWelcome.invited(personKey({ id: "", email }), by), memberBrowserOff: () => managedPolicy.remoteAccessRefusal() !== undefined, plan: (cancelled) => routineHolds?.plan(cancelled), planTier: (tier) => cloudPlanTier.set(tier), memberLeft: (email) => leaveTeam ? leaveTeam(email).then((result) => { botApi.manager.revokeMintedBy(personKey({ id: "", email })); teamOwners.left(email); teamMessages.inbox.forget(personKey({ id: "", email })); forgetSetupPresser(store, personKey({ id: "", email })); devsReports.forget(personKey({ id: "", email })); teamSlack?.memberLeft(personKey({ id: "", email })); return result; }) : Promise.reject(new Error("not a team")), health: { store, bus, perf: perf.health, storage: () => withCacheCounters(perf.storage(), cacheSweeper), dataDir: DATA_DIR, eventsDir: EVENTS_DIR, version: serverVersion(), image: process.env.OMB_CLOUD_IMAGE, routines: (cap) => routines?.health(cap) ?? [], schedule: () => routines?.scheduleReport() ?? null,
   engines: () => registry.instances().map((instance) => ({ instanceId: instance.instanceId, driverKind: instance.driverKind, snapshot: registry.knownSnapshot(instance.instanceId) })),
   connectors: () => emailHost.health(composio.configured(cfg) ? composio.connectedServices(cfg) : null),
@@ -3464,7 +3460,7 @@ type GroupTurnOperation = {
   line?: RoomRoundLine;
   /** The person's room line this run answers (its member turns, mentions included, act for whoever wrote it), or the handed-on work it does. */
   requestMessageId?: string; handedFor?: HandedRun; /** Whether a person's own line started this run, or the work handed on to it traces to one (usage-caps.ts). */ personStarted?: boolean; /** A coordinated run that already started carries on: no usage cap refuses it. */ continuesRun?: boolean;
-  goalRun?: LiveGoalRun; /** What the person pointed at in a member's page; taken once by the page's bot (takeRoomPick). */ pick?: RoomPick;
+  goalRun?: LiveGoalRun; /** What the person pointed at in a member's page; taken once by the page's bot (takeRoomPick). */ pick?: RoomPick; providerAccepted?: boolean;
 };
 
 // Wider than busyBotId (setup and queued responders too), so polling clients never mistake a handoff for completion.
@@ -3871,10 +3867,10 @@ const titleHandedThread = createHandedThreadTitle({ store, gate: threadTitleGate
         if (bot) botFrames.send(bot, threadId);
       }
       // Node changes are the release signal for messages parked behind a settled coordination: no later turn.completed arrives.
-      if (directThreadIds.size > 0) drainQueuedSends();
+      if (directThreadIds.size > 0 || groupIds.size > 0) drainQueuedSends();
     },
     report: (child, parent) => {
-      askCards.closed(child); if (child.outcome === "expired" && child.cards?.length) stopCards(child.threadId, new Set(child.cards));
+      askCards.closed(child); if (child.outcome === "expired" && child.cards?.length) stopCards(child.threadId, new Set(child.cards)); if (child.status === "cancelled" || child.outcome === "stopped" || child.outcome === "expired") secretCardResumer?.forgetNode(child.id);
       if (!parent) {
         parkedSeats.delete(child.id);
         const followupEnded = followupEndedRoots.has(child.id);
@@ -7029,7 +7025,7 @@ function drainQueuedSends() {
   }
 }
 function drainQueuedSendsNow() {
-  automationReports.flush();
+  automationReports.flush(); secretCardResumer.drain();
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
     new Promise<void>((resolve, reject) => {
       void startTurn(botId, prompt, {
@@ -7422,7 +7418,7 @@ async function beginTurn(
     /** The prompt is control-plane context, never a message authored by the user. */
     cardContinuation?: boolean;
     /** Harness-only provenance: never a client option, never inferred from the latest user line. */
-    requestMessageId?: string;
+    requestMessageId?: string; delegatedApproval?: boolean;
     origin?: WorkOrigin;
     computerSelectionContinuation?: boolean;
     replyTo?: ReplyTarget;
@@ -7431,7 +7427,7 @@ async function beginTurn(
     relayed?: boolean;
     dataContext?: DataContext; mentions?: string[];
     app?: { context?: string; fromApp?: Message["fromApp"]; pointed?: Message["pointed"] };
-    onDispatchError?: (message: string) => void;
+    onDispatchError?: (message: string, postDispatch?: boolean) => void;
     compactOnly?: boolean;
     automaticRecoveryAttempted?: boolean;
     automaticRecoveryIndex?: number; peerLimitResent?: boolean; // already the one resend of a bot-to-bot turn on the backup AI
@@ -7456,9 +7452,9 @@ async function beginTurn(
       ...opts,
       runOn: continuingRoutine.runOn, automationRunId: continuingRoutine.id,
       automationSource: continuingRoutine.triggerSource ?? (continuingRoutine.manual ? "manual" : "schedule"),
-      onDispatchError: (message) => {
+      onDispatchError: (message, postDispatch) => {
         routines?.failThread(threadId, message, { cause: "refused" });
-        onDispatchError?.(message);
+        onDispatchError?.(message, postDispatch);
       },
     };
   }
@@ -7515,7 +7511,7 @@ async function beginTurn(
   const usesNativeImageInput = instance.adapter.capabilities.nativeImageInput === true;
   let providerText = promptWithDataContext(usesNativeImageInput ? resolvedImages.text : text, opts?.dataContext);
   const turnImages = usesNativeImageInput ? resolvedImages.images : [], turnVideos = opts?.compactOnly ? [] : nativeClips(resolvedImages.videos, instance.adapter.capabilities, turnImages);
-  const commsDepth = opts?.commsDepth ?? 0;
+  const commsDepth = opts?.commsDepth ?? 0, peerApproval = commsDepth > 0 || opts?.delegatedApproval === true;
   if (commsDepth > 0) markInternalTurn(threadId);
   else { clearInternalTurn(threadId); doneNotice.personTurnStarted(threadId); }
   if (answer.quiet) quietTurnThreads.add(threadId);
@@ -7643,7 +7639,7 @@ async function beginTurn(
   if (!opts?.coordination && !opts?.compactOnly && (!opts?.cardContinuation || opts.goalRunId)) {
     const opener = handoffOpener({ botId: bot.id, threadId }, threadId);
     coordinator.beginTurn({ id: dispatchClaimId, address: { botId: bot.id, threadId }, brief: resolvedImages.text,
-      level: approvalModeForTurn(bot, commsDepth > 0, threadId), ...(opener ? { opener } : {}), origin: requestOrigin,
+      level: approvalModeForTurn(bot, peerApproval, threadId), ...(opener ? { opener } : {}), origin: requestOrigin,
       ...(opts?.goalRunId ? { goalRunId: opts.goalRunId } : {}) });
   }
   if (!opts?.computerSelectionContinuation && !opts?.cardContinuation && !opts?.automationSource && !opts?.unattended &&
@@ -7935,7 +7931,7 @@ async function beginTurn(
           // Claude settles the interrupt below as exit_before_result; the completion fold must not report it a second time.
           resourceOwner.lazyClaimFailureReported = true;
         }
-        opts?.onDispatchError?.(message);
+        opts?.onDispatchError?.(message, true);
         void interruptDirectThread(bot.id, threadId).catch(() => {});
       };
 
@@ -8035,7 +8031,7 @@ async function beginTurn(
         if (wants === "vm") {
           if (await attachLocalVm(true)) computerKind = "vm";
         } else if (wants === "local") {
-          integrations.localComputer = await mountHostComputer(resourceOwner, bot.id, mountsLocalComputer, surfaceLazyClaimRejection("this computer"), () => placeSource === "auto-pin" && liveApprovalMode(bot, threadId, commsDepth > 0) !== "full", savedSteps.journals(directRequestOwners.get(threadId)));
+          integrations.localComputer = await mountHostComputer(resourceOwner, bot.id, mountsLocalComputer, surfaceLazyClaimRejection("this computer"), () => placeSource === "auto-pin" && liveApprovalMode(bot, threadId, peerApproval) !== "full", savedSteps.journals(directRequestOwners.get(threadId)));
           computerKind = "local";
         }
 
@@ -8113,7 +8109,7 @@ async function beginTurn(
             label: "this computer",
             onRejected: surfaceLazyClaimRejection("this computer"),
             claim: async (call) => {
-              await claimWithYourComputerConsent(() => liveApprovalMode(bot, threadId, commsDepth > 0) !== "full", () => askToUseYourComputer(approvalBus, bot, resourceOwner, call), () => bindTurnComputer(resourceOwner, "computer:host", true));
+              await claimWithYourComputerConsent(() => liveApprovalMode(bot, threadId, peerApproval) !== "full", () => askToUseYourComputer(approvalBus, bot, resourceOwner, call), () => bindTurnComputer(resourceOwner, "computer:host", true));
               pinAutoSurface("local"); recordTurnPlace(bot.id, threadId, "local");
             },
           });
@@ -8259,7 +8255,7 @@ async function beginTurn(
         { id: "assignment", label: "Teammate task", text: coordinationNode?.parentId ? `\n${[coordinationSystemInstructions(), roomJobs.laneBulletin(coordinationNode)].filter(Boolean).join("\n")}` : "" },
         { id: "outstanding", label: "Outstanding teammate work", text: teammatePrompts.outstanding(threadId) },
         { id: "teammate-questions", label: "Teammates' questions to the person", text: teammatePrompts.questions(liveBot ?? bot, threadId) },
-        { id: "credential", label: "Credentials", text: credentialPrompt }, { id: "just-do-it", label: "Full access", text: approvalModeForTurn(bot, commsDepth > 0, threadId) === "full" && !isUnattended(bot.id, threadId) && coordinationNode?.origin?.kind !== "outside" ? JUST_DO_IT_PROMPT : "" },
+        { id: "credential", label: "Credentials", text: credentialPrompt }, { id: "just-do-it", label: "Full access", text: approvalModeForTurn(bot, peerApproval, threadId) === "full" && !isUnattended(bot.id, threadId) && coordinationNode?.origin?.kind !== "outside" ? JUST_DO_IT_PROMPT : "" },
         { id: "recall", label: "Recall", text: recallPrompt },
         { id: "routine", label: "Routines", text: routinePrompt },
         { id: "active-routines", label: "Active automations", text: integrations.agents && !confined && (!CLOUD_HOME || cloudOwnerOnlyThread(threadId)) ? activeRoutinesContext({
@@ -8312,8 +8308,8 @@ async function beginTurn(
         text: withTurnClock(clock, withRecalled(recalled, (posted?.text ?? "") + attachmentsForBox(dispatchContext.turnText, cwd, { botId: bot.id, threadId }) + shareNote.text + devsReports.note(threadId, Boolean(integrations.agents)) + (CLOUD_HOME ? idleReclaimNote(DATA_DIR, threadId) : "") + settingNudges.note(threadId, { tools: Boolean(integrations.agents) && personLine && !opts?.unattended, owner: phones.turnOwner({ botId: bot.id, threadId, generation: dispatchClaimId }) !== null && !cloudGuestDriven(threadId), model: `${instanceId}/${model}` }))),
         ...(recalled ? { recalled } : {}),
         images: dispatchContext.images, videos: dispatchContext.videos,
-        approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
-        approvalModeNow: () => liveApprovalMode(bot, threadId, commsDepth > 0),
+        approvalMode: approvalModeForTurn(bot, peerApproval, threadId),
+        approvalModeNow: () => liveApprovalMode(bot, threadId, peerApproval),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: botApiThread(threadId) ? serverLine(threadLanguage(threadId), "server.botApi.confinedWhy") : confinedWhy(threadId) } : {}),
         model,
@@ -8405,7 +8401,7 @@ async function beginTurn(
       }
       if (e instanceof DirectTurnSetupCancelled) {
         settleDirectFollowup(dispatchClaimId, { ok: false, text: e.message });
-        opts?.onDispatchError?.(e.message);
+        opts?.onDispatchError?.(e.message, false);
         if (ownsLatestGeneration && threadBusy(bot.id, threadId)) {
           store.setTaskActivity(bot.id, threadId, "idle");
           directTurnBots.delete(threadId);
@@ -8493,7 +8489,7 @@ async function beginTurn(
       }
       store.setTaskActivity(bot.id, threadId, "idle");
       directTurnBots.delete(threadId);
-      opts?.onDispatchError?.(message);
+      opts?.onDispatchError?.(message, false);
       // A dispatch failure emits no turn.completed, so drain here or the queue behind this turn strands.
       drainQueuedSends();
     }
@@ -10124,10 +10120,11 @@ async function runClaimedGroupMemberTurn(
       if (shouldIgnoreProviderEvent(e)) return;
       if (e.threadId !== threadId) return;
       if (providerTurnId && e.turnId && e.turnId !== providerTurnId) return;
+      if (operation) operation.providerAccepted = true;
       deadline.observe(e);
       if (e.type === "item.completed" && e.itemType === "assistant_text") turnTexts.push(e.text);
       else if (e.type === "turn.completed") {
-        turnCompletedOk = e.ok; turnCompleted = e;
+        if (operation) operation.providerAccepted = true; turnCompletedOk = e.ok; turnCompleted = e;
         const end = roomTurnEnd(e, Boolean(orchestration), roomClaimFailure);
         if (orchestration && end.stopReason !== undefined) {
           orchestration.result.stopReason = roomClaimFailure ? end.stopReason : stoppedTurnText(threadId, e.turnId, undefined, end.stopReason);
@@ -10202,7 +10199,7 @@ async function runClaimedGroupMemberTurn(
         await instance.adapter.interruptTurn(threadId).catch(() => {});
       })
       .then((dispatch) => {
-        providerTurnId = dispatch.value.turnId;
+        if (operation) operation.providerAccepted = true; providerTurnId = dispatch.value.turnId;
         roomSessions.bindTurn(threadId, internalGeneration, dispatch.value.turnId);
         bindInternalCapabilityToProviderTurn(threadId, internalGeneration, dispatch.value.turnId);
         orchestration?.onTurnStarted?.(dispatch.value.turnId);
@@ -10221,7 +10218,7 @@ async function runClaimedGroupMemberTurn(
       .catch((err) => {
         onProviderHandshakeSettled?.();
         clearCancelledProviderHandshake(threadId, retirementOwner);
-        if (abandoned) return;
+        if (abandoned) { reportDispatchError(err instanceof Error ? err.message : "turn failed"); return; }
         const message = err instanceof Error ? err.message : "turn failed";
         store.appendMessage(threadId, {
           role: "bot",
@@ -11377,7 +11374,8 @@ function claimPhoneSecretBotDeletion(botId: string): (() => void) | null {
   };
 }
 
-const secretCards = createSecretCards({ store, cfg, botLogins, vaultStore: logins, vaultReader: vaultReaders.turn, phoneSecrets, phoneSecretSubmissions, connectorThread, answerCardNode, followCard: (threadId, from, to) => coordinator.followCard(threadId, from, to), threadLanguage, email: { connect: (request, reading) => emailService.connect(request, reading), refusal: () => emailService.status().reason, connected: (address) => { const one = emailService.store.get(address); return Boolean(one && !one.problem); }, sendingProblem: (address) => emailService.sendingProblem(address), account: (address) => emailService.status().accounts.find((one) => one.address.toLowerCase() === address.toLowerCase()), checkOutgoing: (address, fields) => emailService.checkOutgoing(address, fields), profileAddress: () => cfg.profile?.email?.trim() || undefined }, dataDir: DATA_DIR, providerKeysRefused: Boolean(hostedModels), layerFolder: (botId, threadId) => workspaceDir(teamHost.layer(botId, threadId)), turnVm: (threadId) => localVmThreadTargets.get(threadId)?.key });
+const secretCardResumer = createSecretCardResumer({ store, connectorThread, updateText: (id, secret, outcome) => secretCards.updateText(id, secret, outcome), isWaitingCard: (threadId, messageId) => coordinator.active().some((n) => n.threadId === threadId && n.status === "waiting" && n.cards?.includes(messageId)), isDirectBlocked: (botId, threadId) => botHolds.held(botId) || threadBusy(botId, threadId) || botAtThreadCapacity(botId, threadId, true) || Boolean(activeGroupTurnForBot(botId)) || coordinator.active().some((n) => !n.groupId && n.threadId === threadId && !ENDED.has(n.status)), isRoomBlocked: (groupId, botId, threadId) => Boolean(roomHeld(store.group(groupId), botId) || botHolds.held(botId) || store.bot(botId)?.busy || hasDirectDispatch(botId) || activeGroupTurnForBot(botId) || roomMemberLock.heldElsewhere(botId, threadId) || groupThreadIsWorking(groupId, threadId) || coordinator.active().some((n) => n.threadId === threadId && n.groupId === groupId && !ENDED.has(n.status) && (n.botId === botId || n.status !== "waiting"))), scheduleDrain: () => { setTimeout(drainQueuedSends, 0).unref(); }, startDirectContinuation: (botId, threadId, text, options) => { const liveOwner = directRequestOwners.get(threadId), reqId = options?.requestMessageId && !(liveOwner?.stopped && liveOwner.messageId === options.requestMessageId) ? options.requestMessageId : undefined; return startTurn(botId, text, { threadId, cardContinuation: true, continuesRun: true, unattended: isUnattended(botId, threadId), ...(reqId ? { requestMessageId: reqId } : {}), ...(options?.delegated ? { delegatedApproval: true } : {}), onDispatchError: (message, postDispatch) => options?.onLateError?.(directContinuationError(message, Boolean(postDispatch))) }); }, startRoomContinuation: (groupId, botId, threadId, text, options) => { const requestMessageId = [...(groupTurnOperations.get(groupId) ?? [])].find((candidate) => candidate.threadId === threadId && !candidate.cancelled && candidate.requestMessageId)?.requestMessageId ?? options?.requestMessageId; const op = Object.assign(beginGroupTurnOperation(groupId, threadId, [botId]), { continuesRun: true, personStarted: true, requestMessageId }); roomMemberLock.claim(botId, threadId); let dispatched = false, dispatchError: string | undefined, settled = false; const next = (groupQueues.get(threadId) ?? Promise.resolve()).catch(() => {}).then(async () => { try { if (!op.cancelled) await runGroupMemberTurn(groupId, threadId, botId, 0, new Set(), text, (message) => { dispatchError = message; if (settled) options?.onLateError?.(roomContinuationError(op.cancelled, message, Boolean(op.providerAccepted))); }, () => op.cancelled, () => { dispatched = true; groupProviderHandshakeStarted(op); }, () => groupProviderHandshakeSettled(op), undefined, undefined, op); if (!dispatched || dispatchError !== undefined) throw roomContinuationError(op.cancelled, dispatchError, Boolean(op.providerAccepted)); } finally { settled = true; } }); const tracked = next.finally(() => finishGroupTurnOperation(groupId, op)); groupQueues.set(threadId, tracked.catch(() => {})); return tracked; } });
+const secretCards = createSecretCards({ store, cfg, botLogins, vaultStore: logins, vaultReader: vaultReaders.turn, phoneSecrets, phoneSecretSubmissions, connectorThread, answerCardNode: (threadId, messageId, text) => answerCardNode(threadId, messageId, text, false), resumeSavedSecret: (botId, threadId) => secretCardResumer.resume(botId, threadId), followCard: (threadId, from, to) => coordinator.followCard(threadId, from, to), threadLanguage, email: { connect: (request, reading) => emailService.connect(request, reading), refusal: () => emailService.status().reason, connected: (address) => { const one = emailService.store.get(address); return Boolean(one && !one.problem); }, sendingProblem: (address) => emailService.sendingProblem(address), account: (address) => emailService.status().accounts.find((one) => one.address.toLowerCase() === address.toLowerCase()), checkOutgoing: (address, fields) => emailService.checkOutgoing(address, fields), profileAddress: () => cfg.profile?.email?.trim() || undefined }, dataDir: DATA_DIR, providerKeysRefused: Boolean(hostedModels), layerFolder: (botId, threadId) => workspaceDir(teamHost.layer(botId, threadId)), turnVm: (threadId) => localVmThreadTargets.get(threadId)?.key });
 const teamBoard = createTeamBoard({ dataDir: DATA_DIR, team: Boolean(CLOUD_TEAM), enabled: () => cfg.features?.teamBoard === true, store, visible: (auth) => visibleTo(viewerFor(auth)), person: (auth) => auth.kind === "session" && auth.session.email ? { person: personKey(auth.session), name: messageSender(auth)?.name ?? "" } : null, sender: messageSender, opened: (auth, threadId) => { if (auth.kind === "session") threadStarters.set(threadId, actorKey(auth)); }, roomRefusal: (groupId) => phoneSecretSubmissions.hasGroup(groupId) ? "This room is securely saving a credential. Try again when it finishes." : null, broadcast }); ROUTES.push(teamBoard.routes); ROUTES.push(createCheckBackRoutes({ checkBacks, sees: (auth, threadId) => visibleTo(viewerFor(auth)).thread(threadId), refusal: (auth, threadId, messageId) => cardAnswerRefusal(auth, threadId, messageId, "deny") })); ROUTES.push(createBurstRoutes({ owner: (id) => burst.owner(id), sees: (auth, threadId) => visibleTo(viewerFor(auth)).thread(threadId), refusal: (auth, threadId, id) => cardAnswerRefusal(auth, threadId, id, "allow"), view: (id) => burst.view(id), run: (id) => burst.run(id), cancel: (id) => burst.cancel(id), retry: (id) => burst.retryFailed(id), edit: (id, plan) => burst.edit(id, plan) })); ROUTES.push(createSecretCardRoutes({ cards: secretCards, phoneSecretSubmissions, threadVisible: (auth, threadId) => visibleTo(viewerFor(auth)).thread(threadId), answerContext: (auth, botId, threadId) => ({ personalCloud: Boolean(CLOUD_PERSONAL), shared: sharedMembership(), owner: (CLOUD_TEAM ? teamOwners.routing.askedPerson(botId, threadId) : null) ?? threadStarters.get(threadId) ?? null, person: auth.kind === "session" ? personKey(auth.session) : null }) }));
 
 // By design OpenMausBot never receives a website password: the person signs in where the bot works, and the bot uses that session.
@@ -15120,7 +15118,7 @@ if (CLOUD_HOME) registerCloudPower(cloudPower = createCloudPower({ dataDir: DATA
   liveCall: () => liveCalls.current() !== null, computer: () => cloudComputerPower.awake() || boatLifecycleBusyBots.size > 0, nextDueAt: () => { const due = [routines?.nextDueAt() ?? null, proactive.brief.nextWakeAt(), botWaits.nextWakeAt(), checkBacks.nextDueAt()].filter((at): at is number => at !== null); return due.length ? Math.min(...due) : null; },
   maintenance: () => workspaceMaintenance.active || providerFleetReloading || providerAuthSessions.active || browserEngineInstall !== null } }));
 
-botLink.start(); let pausedSent = starterAwake.paused().join(); store.onChange((change) => { if (change.type === "bot.deleted") botHolds.forget("bot", change.botId); if (change.type !== "bot" && change.type !== "bot.deleted") return; const paused = starterAwake.paused().join(); if (paused !== pausedSent) { pausedSent = paused; broadcast({ kind: "config", ...configStatus() }); } });
+botLink.start(); let pausedSent = starterAwake.paused().join(); store.onChange((change) => { if (change.type === "group") drainQueuedSends(); if (change.type === "bot.deleted") botHolds.forget("bot", change.botId); if (change.type !== "bot" && change.type !== "bot.deleted") return; const paused = starterAwake.paused().join(); if (paused !== pausedSent) { pausedSent = paused; broadcast({ kind: "config", ...configStatus() }); } });
 server.listen(PORT, listenHost(server), async () => {
   companyRuntimeReady(); cloudHealth?.speed.ready(); void tailnetShare.start(process.env);
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`); launchListening();
