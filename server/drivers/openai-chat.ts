@@ -1,15 +1,8 @@
 import { RuntimeNoticeError, runtimeErrorText } from "./runtime-notice-error.ts";
 import { createHash } from "node:crypto";
-import type {
-  DriverCreateInput,
-  ModelCatalog,
-  ProviderInstance, ProviderSnapshot,
-  RuntimeEvent,
-  RuntimeEventListener,
-  SendTurnInput,
-  TextGenerationOptions,
-} from "../contracts.ts";
+import type { DriverCreateInput, ModelCatalog, ProviderInstance, ProviderSnapshot, RuntimeEvent, RuntimeEventListener, SendTurnInput, TextGenerationOptions } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { CustomHeaderError, customHeaderSecrets, maskCustomSecrets, resolveCustomHeaders, scrubErrorSecrets, type OpenAICompatCustomHeadersConfig, type RuntimeHeaderContext } from "./openai-compat-headers.ts";
 import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQuestions, questionChoices } from "../../shared/ask-question.ts";
 import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
 import { redactSecretsInText } from "../redact.ts";
@@ -96,6 +89,7 @@ interface RuntimeOptions<Config> {
   missingKeyError: string;
   unavailableReason: string;
   timeoutMs: number;
+  customHeaders?: OpenAICompatCustomHeadersConfig;
   /** Ask a server on this machine or network for its models this often while a reply is pending, and stop the reply
    * when it misses LIVENESS_MISSES checks in a row: it crashed, froze or left the network. */
   livenessEveryMs?: number;
@@ -257,7 +251,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     signal?: AbortSignal,
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
-    onUsage?: TextGenerationOptions["onUsage"], variant?: string, threadId?: string,
+    onUsage?: TextGenerationOptions["onUsage"], variant?: string, threadId?: string, headerContext?: RuntimeHeaderContext,
   ): Promise<Completion> => {
     const timeoutController = new AbortController();
     let idleTimer: NodeJS.Timeout | null = null;
@@ -287,10 +281,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           ...(tools.length ? { tools } : {}),
         });
       const send = options.timeoutMs > FETCH_LIMIT_MS ? fetchPastLimit : fetch;
+      const customHeaders = options.customHeaders ? resolveCustomHeaders(options.customHeaders, headerContext ?? { threadId, providerInstanceId: input.instanceId }) : undefined;
       const response = await send(`${options.apiUrl}/${route === "responses" ? "responses" : "chat/completions"}`, {
         method: "POST",
-        ...(messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === "image_url")) ? { redirect: "error" as const } : {}),
-        headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
+        ...((Object.keys(customHeaders ?? {}).length || messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === "image_url"))) ? { redirect: "error" as const } : {}),
+        headers: { ...customHeaders, authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
         body: payload,
         signal: activeSignal,
       });
@@ -462,7 +457,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     signal?: AbortSignal,
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
-    onUsage?: TextGenerationOptions["onUsage"], variant?: string, threadId?: string,
+    onUsage?: TextGenerationOptions["onUsage"], variant?: string, threadId?: string, headerContext?: RuntimeHeaderContext,
   ): Promise<Completion> => {
     for (;;) {
       let replied = false;
@@ -470,7 +465,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         return await completeOn(routes.routeFor(model, tools.length > 0), messages, model, stream, signal, onDelta && ((text, kind) => {
           replied = true;
           onDelta(text, kind);
-        }), tools, onUsage, variant, threadId);
+        }), tools, onUsage, variant, threadId, headerContext);
       } catch (error) {
         if (!(error instanceof ModelRouteRefused) || replied || signal?.aborted) throw error;
         if (!routes.advance(model, error.refusal)) throw new ChatProtocolError(noRouteLeft(error.message));
@@ -524,7 +519,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     const retainImages = chatImageBudget();
     let model = turn.model || options.models().default;
     const maskable = (value: unknown): value is string => typeof value === "string" && value.length >= 8; // a short placeholder key ("1") would redact every match
-    const secrets = [options.apiKey].filter(maskable);
+    const headerContext: RuntimeHeaderContext = { threadId: turn.threadId, botId: turn.botId, turnId, providerInstanceId: input.instanceId };
+    const secrets = [...[options.apiKey].filter(maskable), ...customHeaderSecrets(options.customHeaders, headerContext)];
     for (const integration of Object.values(turn.integrations ?? {})) {
       const entries = object(integration);
       const specs = entries && "command" in entries ? [entries] : Object.values(entries ?? {}).map(object);
@@ -534,11 +530,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         }
       }
     }
-    const safeText = (text: string) => {
-      let safe = text;
-      for (const secret of secrets) if (secret) safe = safe.split(secret).join("[redacted]");
-      return redactSecretsInText(safe);
-    };
+    const safeText = (text: string) => redactSecretsInText(maskCustomSecrets(text, secrets));
     const preview = (value: unknown) => toolDetailPreview(JSON.parse(JSON.stringify(value, (_key, part) =>
       typeof part === "string" ? safeText(part) : part)));
     const native = (dir: "out" | "in", msg: unknown) => appendNative(turn.threadId, {
@@ -661,7 +653,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 if (streamKind === "assistant_text") answerStreamed = true;
                 const shown = holdback && streamKind === "assistant_text" ? holdback.feed(text) : text;
                 if (shown) delta(shown, streamKind);
-              }, tools.definitions, undefined, turn.variant, turn.threadId);
+              }, tools.definitions, undefined, turn.variant, turn.threadId, headerContext);
               // A reply cut off at the token limit may be a call cut short; running half of one is worse than saying so.
               const written = holdback && !completion.toolCalls.length && completion.finishReason !== "length" ? textToolCalls(completion.text, tools.definitions) : null;
               unreadable = written?.kind === "unreadable" && !askedAgain;
@@ -723,7 +715,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               }
               // Never replay a handled call. A stream closed before any completion marker ran nothing upstream, so it may resend even where the caller never opted into retries.
               const truncation = error instanceof StreamTruncatedError, retryScale = truncation ? options.retryScale ?? 1 : options.retryScale;
-              if (retryScale === undefined || abort.signal.aborted || streamed || seenCalls.size || error instanceof RuntimeNoticeError || (!truncation && (error instanceof ChatProtocolError || !verdict.transient)) || attempt >= RETRY_MAX_ATTEMPTS - 1) throw error;
+              if (retryScale === undefined || abort.signal.aborted || streamed || seenCalls.size || error instanceof RuntimeNoticeError || error instanceof CustomHeaderError || (!truncation && (error instanceof ChatProtocolError || !verdict.transient)) || attempt >= RETRY_MAX_ATTEMPTS - 1) throw error;
               const delayMs = computeBackoff(attempt++);
               emit({ ...base(turn.threadId, turnId), type: "turn.retrying", attempt, delayMs, reason: truncation ? "stream_truncated" : verdict.reason });
               await interruptibleDelay(delayMs * retryScale, abort.signal).promise;
@@ -914,7 +906,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               threadId: turn.threadId, turnId, model,
               usage, hasUsage, failure, toolCalls: seenCalls.size,
               task: turn.text, updates: deliveredAsides,
-              messages: request ? messages.slice(messages.indexOf(request) + 1) : [],
+              messages: request ? messages.slice(messages.indexOf(request) + 1).map((msg) => JSON.parse(JSON.stringify(msg, (_key, part) => typeof part === "string" ? safeText(part) : part))) : [],
             });
             if (handoffPath) emit({ ...base(turn.threadId, turnId), type: "cap.exhausted", handoffPath, reason: continuable });
           }
@@ -982,13 +974,19 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         return () => listeners.delete(listener);
       },
     },
-    generateText: async (prompt, { signal, onUsage, model: named, checkModel } = {}) => {
+    generateText: async (prompt, { signal, onUsage, model: named, checkModel, threadId } = {}) => {
       const model = named ?? options.generateModel?.() ?? options.models().default;
       signal?.throwIfAborted();
       checkModel?.(model);
-      const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage);
-      if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
-      return text.trim() ? text : reasoning;
+      const headerContext: RuntimeHeaderContext = { ...(threadId ? { threadId } : {}), providerInstanceId: input.instanceId };
+      const headerSecrets = customHeaderSecrets(options.customHeaders, headerContext);
+      try {
+        const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage, undefined, threadId, headerContext);
+        if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
+        return maskCustomSecrets(text.trim() ? text : reasoning, headerSecrets);
+      } catch (error) {
+        throw scrubErrorSecrets(error, headerSecrets);
+      }
     },
     dispose: async () => {
       const turns = [...active.values()];
