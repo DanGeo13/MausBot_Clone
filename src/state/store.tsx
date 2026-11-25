@@ -61,6 +61,7 @@ import { forgetLiveTurns, noteRuntimeTurn, sendStop } from "@/lib/stop-turn";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
 import { readLastBotSection, rememberBotSection } from "@/lib/last-bot-section";
 import { showNotification } from "@/lib/notify";
+import { actionSound, approvalSound, errorSound, frameSound } from "./store-sounds";
 import { randomUuid } from "@/lib/random-uuid";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { speechOwner, spokenReplyStream } from "@/lib/spoken-reply-stream";
@@ -2093,7 +2094,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       settled: (botId, threadId) => waitForExecutionSettings(stateRef.current.bots.filter((bot) => bot.id === botId), threadId), navigated: (botId) => navigation.set(botId, (navigation.get(botId) ?? 0) + 1), create: (botId, projectId) => botPatchQueue.flush(botId).then(() => api<{ bot: Bot }>(`/api/bots/${botId}/tasks`, { method: "POST", body: JSON.stringify({ projectId }) })) });
     let creatingBot = false;
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-    const showError = (e: unknown) => { if (isBotLimitRefusal(e)) return; if (isNoAiRefusal(e)) wrapped({ type: "notice", notice: { kind: "note", botName: null, text: e.message } }); else rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) }); };
+    const showError = (e: unknown) => { if (isBotLimitRefusal(e)) return; errorSound(); if (isNoAiRefusal(e)) wrapped({ type: "notice", notice: { kind: "note", botName: null, text: e.message } }); else rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) }); };
     const showSavedState = (owner: SavedOwner) => (error: unknown) => {
       showError(error);
       void api<SavedSnapshot>("/api/bots?messages=0").then((snapshot) => {
@@ -2200,10 +2201,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (action.type === "botPatched") action = { ...action, bot: withTaskWrites(action.bot) };
       if (action.type === "openForkPanel" && !action.loadId) action = { ...action, loadId: randomUuid() };
       if ((action.type === "send" || action.type === "sendGroup" || action.type === "editMessage") && !action.sendId) action = { ...action, sendId: randomUuid() };
-      const botBeforeUpdate =
-        action.type === "updateBot" || action.type === "setModel"
-          ? stateRef.current.bots.find((candidate) => candidate.id === action.botId)
-          : undefined;
+      actionSound(action);
+      const botBeforeUpdate = action.type === "updateBot" || action.type === "setModel" ? stateRef.current.bots.find((candidate) => candidate.id === action.botId) : undefined;
       const botBeforeSend = action.type === "send" ? stateRef.current.bots.find((candidate) => candidate.id === action.botId) : undefined;
       const leafBeforeEdit = action.type === "editMessage" ? stateRef.current.bots.find((candidate) => candidate.id === action.botId)?.activeLeafId ?? null : null;
       const executionBotsBeforeAction = (() => {
@@ -2422,7 +2421,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   body: JSON.stringify(owner ? { threadId: action.threadId, allowKey: action.alwaysAllow.key } : { alwaysAllow: next }),
                 });
               }
-              const response = await respond();
+              const response = approvalSound(await respond());
               if (response?.settlementPending && typeof response.message === "string") {
                 showError(new Error(response.message));
               }
@@ -3017,6 +3016,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     const stopFrames = store.handleFrames((frame) => { handleFrame(frame); stateRef.current = store.getState(); });
     handleFrame = (frame) => {
+      frameSound(stateRef.current, frame);
       if (frame.kind === "config") bumpPeripheralVersion("config", "instances");
       else if (frame.kind === "routine" || frame.kind === "routine.deleted" || frame.kind === "routine.run") {
         bumpPeripheralVersion("routines");
