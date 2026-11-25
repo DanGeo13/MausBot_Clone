@@ -139,8 +139,9 @@ times are `scripts/testing/vitest-shard-weights.json`: for each platform
 runners, for every file over five seconds and every e2e file. A file not in it
 counts one second, or the median e2e time if it is an e2e file. Shard 1 of
 each platform also runs the `node --test` suites after vitest, about two
-minutes on the macOS and Windows runners, so the sequencer starts that shard
-at those seconds (`NODE_TESTS_SECONDS`) and gives it that much less vitest.
+minutes on the macOS and Windows runners and 94 seconds on Linux, so the
+sequencer starts that shard at those seconds (`NODE_TESTS_SECONDS`) and gives
+it that much less vitest.
 Every file still runs exactly once, and each shard job logs a
 `duration-sequencer:` line with its share.
 
@@ -354,10 +355,10 @@ vitest runner (`scripts/testing/ci-retry-runner.ts`) gives each listed test
 two retries; nothing else is retried, and local runs never retry. Retries
 are bounded per file: once a listed test fails all three attempts, that is a
 real failure, and the file's later listed tests get no retry. Otherwise a
-regression that breaks a whole fixture (six listed tests share
-`server/delta-context.e2e.test.ts`) would triple their wall time and push the
-Linux shard past its 25-minute cap, and a timed-out job loses the failing
-tests' annotations and this summary. The cost: a real flake listed after a
+regression that breaks a whole fixture (five listed tests share
+`server/delta-context-recovery.e2e.test.ts`) would triple their wall time and
+push the Linux shard past its 25-minute cap, and a timed-out job loses the
+failing tests' annotations and this summary. The cost: a real flake listed after a
 broken test in the same file is not retried in that run. A listed
 test that needed a retry is written to the vitest job's summary and raised as
 a warning annotation (`scripts/testing/ci-retry-summary.mjs`), so a flake
