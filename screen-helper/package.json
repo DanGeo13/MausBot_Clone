@@ -1,0 +1,16 @@
+{
+  "name": "screen-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Press a shortcut, and Claude reads your screen and answers the questions on it.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}
